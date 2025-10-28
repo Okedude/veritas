@@ -55,21 +55,40 @@
     </style>
     <!-- Firebase Imports -->
     <script type="module">
-        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, collection, addDoc, query, orderBy, limit, onSnapshot, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
-        import { setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        // SDKs wurden auf Version 12.4.0 aktualisiert
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/12.4.0/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/12.4.0/firebase-auth.js";
+        import { getFirestore, collection, addDoc, query, orderBy, limit, onSnapshot, serverTimestamp } from "https://www.gstatic.com/firebasejs/12.4.0/firebase-firestore.js";
+        import { setLogLevel } from "https://www.gstatic.com/firebasejs/12.4.0/firebase-firestore.js";
+
+        // Gemini API URL
+        const apiKey = ""; // Wird von der Umgebung bereitgestellt
+        const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
 
         // Firebase Globals (MANDATORY USE)
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-        const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+        
+        // FIX: Bereitstellung der echten Konfiguration als Fallback, falls die Umgebungsvariablen fehlen.
+        const fallbackConfig = JSON.stringify({
+            apiKey: "AIzaSyAzPU9g5iY0GTKRNB1QLwoJnbyldPQ6dt0",
+            authDomain: "veritas-d3525.firebaseapp.com",
+            databaseURL: "https://veritas-d3525-default-rtdb.europe-west1.firebasedatabase.app",
+            projectId: "veritas-d3525",
+            storageBucket: "veritas-d3525.firebasestorage.app",
+            messagingSenderId: "740596654439",
+            appId: "1:740596654439:web:b421ff3b714d5e1e750fc2",
+            measurementId: "G-P443Q592CH"
+        });
+        
+        const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : fallbackConfig);
+        
         const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
 
         let db = null;
         let auth = null;
         let globalUserId = null;
 
-        // --- Hilfsfunktionen (DEFINIERT HIER, FIX für ReferenceError: showMessage) ---
+        // --- Hilfsfunktionen (DEFINIERT HIER UND EXPORTIERT AN WINDOW) ---
 
         /** Zeigt eine benutzerdefinierte Meldung an (ersetzt alert()) */
         const showMessage = (title, content) => {
@@ -144,6 +163,13 @@
                 }
             }
         }
+        
+        // Exponiere die Helferfunktionen global (FIX für Error 1)
+        window.showMessage = showMessage;
+        window.fileToBase64 = fileToBase64;
+        window.setLoading = setLoading;
+        window.robustFetch = robustFetch;
+
 
         // --- Firebase Initialisierung und Authentifizierung ---
         const initFirebase = async () => {
@@ -159,11 +185,14 @@
                         if (user) {
                             globalUserId = user.uid;
                         } else {
+                            // Verwenden Sie den initialAuthToken, falls vorhanden
                             if (initialAuthToken) {
                                 await signInWithCustomToken(auth, initialAuthToken);
                             } else {
+                                // Anonyme Anmeldung, wenn kein Token verfügbar ist
                                 await signInAnonymously(auth);
                             }
+                            // Die ID ist nun entweder die von Firebase (uid) oder eine zufällige
                             globalUserId = auth.currentUser?.uid || crypto.randomUUID();
                         }
                         unsubscribe();
@@ -178,14 +207,21 @@
 
             } catch (error) {
                 console.error("Firebase Initialisierungsfehler:", error);
-                document.getElementById('error-message').textContent = `Initialisierungsfehler: ${error.message}`;
+                // ANGEPASSTE FEHLERMELDUNG: Bessere Erklärung für den Nutzer, der es extern ausführt
+                document.getElementById('error-message').textContent = `
+                    FEHLER: Firebase Initialisierung fehlgeschlagen. 
+                    (Grund: ${error.message}). 
+                    Der Community Feed ist möglicherweise deaktiviert.
+                `;
                 document.getElementById('error-message').classList.remove('hidden');
+                // Setze db auf null, um Speicherversuche zu blockieren
+                db = null; 
             }
         };
 
         // --- Community Feed Logik ---
         const setupCommunityFeed = () => {
-            if (!db) return;
+            if (!db) return; // Wenn db null ist (Fehler bei Initialisierung), abbrechen
 
             // Öffentliche Sammlung für alle Übersetzungen
             const translationsCollectionRef = collection(db, 'artifacts', appId, 'public', 'data', 'translations');
@@ -213,8 +249,6 @@
                     
                     const time = data.timestamp ? new Date(data.timestamp.seconds * 1000).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' }) : 'Unbekannt';
                     const date = data.timestamp ? new Date(data.timestamp.seconds * 1000).toLocaleDateString('de-DE') : 'Unbekannt';
-                    // Zeigt nur die ersten und letzten 4 Zeichen der User ID an
-                    const displayUserId = data.userId ? `${data.userId.substring(0, 4)}...${data.userId.substring(data.userId.length - 4)}` : 'Anonym'; 
 
                     // Kürze den lateinischen Text für die Vorschau
                     const latinPreview = data.latinInput.length > 80 ? data.latinInput.substring(0, 80) + '...' : data.latinInput;
@@ -242,11 +276,12 @@
         
         // --- Hinzufügen der Speicherlogik zum Übersetzungsablauf ---
         window.runTranslationAndSave = async () => {
+            // Greift auf die Elemente über das global gesetzte DOM_ELEMENTS-Objekt zu
             const { latinInput, germanOutput, fileUpload, errorMessageDiv } = window.DOM_ELEMENTS || {};
-
+            
             if (window.isTranslating) return;
 
-            setLoading(true);
+            window.setLoading(true);
             germanOutput.value = '';
 
             try {
@@ -259,12 +294,13 @@
                 if (selectedFile) {
                     const mimeType = selectedFile.type;
                     if (mimeType.startsWith('image/')) {
-                        const base64Data = await fileToBase64(selectedFile);
+                        const base64Data = await window.fileToBase64(selectedFile);
                         payload = {
                             contents: [{ role: "user", parts: [{ text: promptInstruction }, { inlineData: { mimeType: mimeType, data: base64Data } }] }],
                         };
                     } else if (mimeType === 'application/pdf') {
-                        showMessage("PDF-Hinweis", "Das Parsen ganzer PDFs kann ungenau sein. Die KI versucht, den Text zu extrahieren.");
+                        window.showMessage("PDF-Hinweis", "Das Parsen ganzer PDFs kann ungenau sein. Die KI versucht, den Text zu extrahieren."); 
+                        // Fügen Sie den Dateinamen in den Prompt ein, um der KI Kontext zu geben
                         payload = {
                             contents: [{ role: "user", parts: [{ text: promptInstruction + ` Bitte beachte, dass die Eingabe ein PDF (${selectedFile.name}) ist und versuche den Text zu extrahieren und zu übersetzen.` }] }],
                         };
@@ -276,233 +312,270 @@
                         contents: [{ role: "user", parts: [{ text: promptInstruction + `\n\nLAT. TEXT: ${textContent}` }] }],
                     };
                 } else {
-                    showMessage("Fehlende Eingabe", "Bitte geben Sie einen lateinischen Text ein oder wählen Sie eine Datei zum Übersetzen.");
-                    setLoading(false);
+                    window.showMessage("Fehlende Eingabe", "Bitte geben Sie einen lateinischen Text ein oder wählen Sie eine Datei zum Übersetzen."); 
+                    window.setLoading(false);
                     return;
                 }
 
                 // API-Aufruf
                 const options = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) };
-                const response = await robustFetch(apiUrl, options);
+                const response = await window.robustFetch(apiUrl, options); 
                 const result = await response.json();
                 const germanTranslation = result.candidates?.[0]?.content?.parts?.[0]?.text || "Die KI konnte keine klare Übersetzung generieren.";
                 
                 germanOutput.value = germanTranslation.trim();
 
                 // Speichern der Übersetzung in Firestore (Öffentlich)
-                const translationsCollectionRef = collection(db, 'artifacts', appId, 'public', 'data', 'translations');
-                await addDoc(translationsCollectionRef, {
-                    userId: globalUserId,
-                    latinInput: textContent || (selectedFile ? `[Bild/PDF: ${selectedFile.name}]` : 'Text extrahiert von Datei.'),
-                    germanOutput: germanTranslation.trim(),
-                    timestamp: serverTimestamp()
-                });
+                if (db) { // Nur speichern, wenn db erfolgreich initialisiert wurde
+                    const translationsCollectionRef = collection(db, 'artifacts', appId, 'public', 'data', 'translations');
+                    await addDoc(translationsCollectionRef, {
+                        userId: globalUserId,
+                        // Speichere den eingegebenen Text oder einen Hinweis auf die Datei
+                        latinInput: textContent || (selectedFile ? `[Bild/PDF: ${selectedFile.name}]` : 'Text extrahiert von Datei.'), 
+                        germanOutput: germanTranslation.trim(),
+                        timestamp: serverTimestamp()
+                    });
+                } else {
+                    console.warn("Speichern übersprungen: Firebase nicht verfügbar.");
+                }
+
 
             } catch (error) {
                 console.error("Übersetzungsfehler:", error);
                 errorMessageDiv.textContent = `Ein Fehler ist aufgetreten: ${error.message}`;
                 errorMessageDiv.classList.remove('hidden');
             } finally {
-                setLoading(false);
+                window.setLoading(false); 
             }
         };
-
-        // Exponiere die Hilfsfunktionen, damit sie von Event-Listenern im DOM erreicht werden
-        window.showMessage = showMessage;
-        window.fileToBase64 = fileToBase64;
-        window.setLoading = setLoading;
-        window.robustFetch = robustFetch;
-        // copyToClipboard wird im globalen Skript definiert
     </script>
 
     <script>
-        // --- Globale Konstanten und Helfer ---
-        const apiKey = "";
-        const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
+        // API URL für die Gemini-Aufrufe (muss hier wiederholt werden, da es ein separates Skript ist)
+        const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=`;
 
-        // Globale Variablen für DOM-Elemente und Status (werden in DOMContentLoaded gesetzt)
-        let latinInput, germanOutput, translateButton, loadingSpinner, buttonText, errorMessageDiv, fileUpload, copyButton, modalCloseButton;
-        window.DOM_ELEMENTS = {}; // Objekt zum Speichern der Elemente für den Modul-Zugriff
-        window.isTranslating = false; // Statusvariable
+        // Globales Flag, um Doppelklicks zu verhindern
+        window.isTranslating = false;
 
-        /** Fügt den übersetzten Text in die Zwischenablage ein */
-        function copyToClipboard() {
-            // Verwendet die im Modul-Skript definierte showMessage (window.showMessage)
-            if (!germanOutput.value) { window.showMessage("Fehler", "Es gibt keinen Text zum Kopieren."); return; }
-
-            const textToCopy = germanOutput.value;
-            const tempInput = document.createElement('textarea');
-            tempInput.value = textToCopy;
-            document.body.appendChild(tempInput);
-            tempInput.select();
-            document.execCommand('copy');
-            document.body.removeChild(tempInput);
-
-            copyButton.textContent = 'Kopiert!';
-            setTimeout(() => { copyButton.textContent = 'Kopieren'; }, 2000);
-        }
-
-        // --- Event-Listener für Interaktion ---
         document.addEventListener('DOMContentLoaded', () => {
-            // DOM-Elemente HIER abrufen und globale Variablen setzen (FIX für Error 2)
-            latinInput = document.getElementById('latin-input');
-            germanOutput = document.getElementById('german-output');
-            translateButton = document.getElementById('translate-button');
-            loadingSpinner = document.getElementById('loading-spinner');
-            buttonText = document.getElementById('button-text');
-            errorMessageDiv = document.getElementById('error-message');
-            fileUpload = document.getElementById('file-upload');
-            copyButton = document.getElementById('copy-button');
-            modalCloseButton = document.getElementById('modal-close-button');
+            // FIX für TypeError: Cannot read properties of null (reading 'addEventListener')
+            // Wir speichern alle relevanten DOM-Elemente in einem globalen Objekt, 
+            // das vom Modul-Skript verwendet wird.
+            window.DOM_ELEMENTS = {
+                latinInput: document.getElementById('latin-input'),
+                germanOutput: document.getElementById('german-output'),
+                translateButton: document.getElementById('translate-button'),
+                fileUpload: document.getElementById('file-upload'),
+                dragDropArea: document.getElementById('drag-drop-area'),
+                loadingSpinner: document.getElementById('loading-spinner'),
+                buttonText: document.getElementById('button-text'),
+                errorMessageDiv: document.getElementById('error-message'),
+                modal: document.getElementById('message-modal'),
+                copyButton: document.getElementById('copy-button'),
+                // Elemente für das Community Feed (nur zur Referenz, werden im Modul verwendet)
+                communityFeedContent: document.getElementById('community-feed-content'),
+                userIdDisplay: document.getElementById('user-id-display')
+            };
+            
+            const { 
+                latinInput, translateButton, fileUpload, dragDropArea, modal, 
+                copyButton 
+            } = window.DOM_ELEMENTS;
 
-            // Elemente für den Modul-Zugriff speichern
-            window.DOM_ELEMENTS = { latinInput, germanOutput, translateButton, loadingSpinner, buttonText, errorMessageDiv, fileUpload, copyButton, modalCloseButton };
+            // --- Event Listeners für Benutzerinteraktionen ---
 
-            // 1. Haupt-Buttons
-            translateButton.addEventListener('click', () => {
-                // Ruft die Funktion auf, die im Modul-Skript definiert und an 'window' gehängt wurde
-                window.runTranslationAndSave(); 
-            });
-            copyButton.addEventListener('click', copyToClipboard);
-            modalCloseButton.addEventListener('click', () => {
-                document.getElementById('message-modal').classList.add('hidden');
-            });
-
-            // 2. Text- und Datei-Listener
-            fileUpload.addEventListener('change', (e) => {
-                if (e.target.files.length > 0) {
+            // 1. Übersetzen-Button
+            if (translateButton) {
+                translateButton.addEventListener('click', window.runTranslationAndSave);
+            }
+            
+            // 2. Clear-Button
+            const clearButton = document.getElementById('clear-button');
+            if (clearButton) {
+                clearButton.addEventListener('click', () => {
                     latinInput.value = '';
+                    window.DOM_ELEMENTS.germanOutput.value = '';
+                    fileUpload.value = ''; // Setzt auch das Dateifeld zurück
+                    window.DOM_ELEMENTS.copyButton.classList.add('hidden');
+                    window.DOM_ELEMENTS.errorMessageDiv.classList.add('hidden');
+                    window.DOM_ELEMENTS.errorMessageDiv.textContent = '';
+                });
+            }
+
+            // 3. Modal-Schließen
+            if (modal) {
+                const closeModalButton = document.getElementById('close-modal-button');
+                if (closeModalButton) {
+                    closeModalButton.addEventListener('click', () => {
+                        modal.classList.add('hidden');
+                    });
                 }
-            });
+            }
 
-            latinInput.addEventListener('input', () => {
-                if (latinInput.value.trim().length > 0) {
-                    fileUpload.value = '';
-                }
-            });
-
-            // 3. Drag-and-Drop / Copy-Paste Handling
-            ['dragover', 'drop', 'paste'].forEach(eventName => {
-                latinInput.addEventListener(eventName, (e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-
-                    if (eventName === 'dragover') {
-                        latinInput.classList.add('border-indigo-500', 'ring-4', 'ring-indigo-200');
-                        return;
+            // 4. Copy-Button
+            if (copyButton) {
+                copyButton.addEventListener('click', () => {
+                    const textToCopy = window.DOM_ELEMENTS.germanOutput.value;
+                    try {
+                        // Verwendung von execCommand für breitere Kompatibilität in iFrames
+                        const textArea = document.createElement('textarea');
+                        textArea.value = textToCopy;
+                        document.body.appendChild(textArea);
+                        textArea.select();
+                        document.execCommand('copy');
+                        document.body.removeChild(textArea);
+                        window.showMessage("Erfolg", "Deutsche Übersetzung in die Zwischenablage kopiert!");
+                    } catch (err) {
+                        console.error('Kopieren fehlgeschlagen:', err);
+                        window.showMessage("Fehler", "Kopieren in die Zwischenablage fehlgeschlagen. Bitte manuell kopieren.");
                     }
-                    latinInput.classList.remove('border-indigo-500', 'ring-4', 'ring-indigo-200');
+                });
+            }
 
-                    if (eventName === 'drop' && e.dataTransfer.files.length > 0) {
-                        fileUpload.files = e.dataTransfer.files;
-                        latinInput.value = '';
-                        window.showMessage("Datei ausgewählt", `Datei (${e.dataTransfer.files[0].name}) wurde ausgewählt. Klicken Sie auf 'Übersetzen'.`);
-                        return;
-                    } else if (eventName === 'paste' && e.clipboardData.files.length > 0) {
-                        fileUpload.files = e.clipboardData.files;
-                        latinInput.value = '';
-                        window.showMessage("Bild erkannt", `Bilddatei wurde erkannt. Klicken Sie auf 'Übersetzen'.`);
-                        return;
-                    } else if (eventName === 'paste' && e.clipboardData.getData('text')) {
-                        const text = e.clipboardData.getData('text');
-                        latinInput.value = text;
-                        fileUpload.value = '';
-                        return;
+            // --- Drag & Drop / Copy-Paste Handling ---
+
+            // A. Drag & Drop Logik
+            if (dragDropArea) {
+                ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+                    dragDropArea.addEventListener(eventName, (e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                    }, false);
+                });
+
+                ['dragenter', 'dragover'].forEach(eventName => {
+                    dragDropArea.addEventListener(eventName, () => {
+                        dragDropArea.classList.add('border-indigo-600', 'bg-indigo-50');
+                    }, false);
+                });
+
+                ['dragleave', 'drop'].forEach(eventName => {
+                    dragDropArea.addEventListener(eventName, () => {
+                        dragDropArea.classList.remove('border-indigo-600', 'bg-indigo-50');
+                    }, false);
+                });
+
+                dragDropArea.addEventListener('drop', (e) => {
+                    const dt = e.dataTransfer;
+                    const files = dt.files;
+                    if (files.length > 0) {
+                        // Setzt die Datei im Dateiauswahlfeld
+                        fileUpload.files = files;
+                        // Führt sofort die Übersetzung aus
+                        window.runTranslationAndSave();
                     }
                 }, false);
-            });
+            }
 
-            latinInput.addEventListener('dragleave', (e) => {
-                latinInput.classList.remove('border-indigo-500', 'ring-4', 'ring-indigo-200');
-            });
+            // B. Copy-Paste Bild Handling
+            if (latinInput) {
+                latinInput.addEventListener('paste', async (e) => {
+                    const items = (e.clipboardData || e.originalEvent.clipboardData).items;
+                    for (const item of items) {
+                        if (item.type.indexOf('image') !== -1) {
+                            e.preventDefault(); // Verhindert das Einfügen von Text, wenn ein Bild erkannt wird
+                            const blob = item.getAsFile();
+                            
+                            // Erstellen eines DataTransfer-Objekts, um das Datei-Input-Feld zu manipulieren
+                            const dataTransfer = new DataTransfer();
+                            dataTransfer.items.add(blob);
+                            fileUpload.files = dataTransfer.files;
 
-            // Anfangszustand
-            if (germanOutput.value.trim().length === 0) {
-                copyButton.classList.add('hidden');
+                            // Führt die Übersetzung aus
+                            await window.runTranslationAndSave();
+                            break;
+                        }
+                    }
+                });
             }
         });
     </script>
-</head>
-<body class="p-4 md:p-8">
 
-    <!-- Header -->
-    <header class="header-bg text-white p-6 rounded-xl shadow-lg mb-8">
-        <h1 class="text-3xl md:text-4xl font-bold font-['Merriweather'] text-center tracking-wider">
-            Veritas: Latein-Deutsch KI-Übersetzer
-        </h1>
-        <p class="text-center text-indigo-200 mt-2 text-lg">
-            Fügen Sie Text, Bilder oder Dokumente ein.
-        </p>
-        <div id="user-id-display" class="text-xs text-indigo-300 text-center mt-2">Wird geladen...</div>
-    </header>
+    <div class="header-bg p-4 shadow-lg text-white">
+        <div class="max-w-7xl mx-auto flex justify-between items-center flex-wrap">
+            <h1 class="text-3xl font-serif font-bold tracking-wider text-yellow-300">
+                VERITAS
+            </h1>
+            <p id="user-id-display" class="text-sm opacity-75 mt-2 md:mt-0">
+                Nutzer-ID: Wird geladen...
+            </p>
+        </div>
+    </div>
 
-    <!-- Main Translator Grid -->
-    <main class="max-w-7xl mx-auto">
-        <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+    <div class="max-w-7xl mx-auto p-4 md:p-8">
+        <!-- Fehleranzeige -->
+        <div id="error-message" class="hidden bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative mb-6 text-sm" role="alert">
+            <!-- Fehlertext wird hier von JS eingefügt -->
+        </div>
+
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
             
-            <!-- Linke Spalte: Translator Input/Output (2/3 Breite auf Desktop) -->
-            <div class="lg:col-span-2 space-y-6">
-
-                <!-- Input Panel -->
-                <div id="input-panel" class="card border-t-4 border-indigo-500">
-                    <h2 class="text-xl font-semibold mb-3 text-gray-700 flex items-center">
-                        <span class="mr-2 text-indigo-500">🏛️</span> Lateinischer Text / Bild / PDF
-                    </h2>
-                    <textarea id="latin-input" class="text-input w-full p-4 border border-gray-300 rounded-lg resize-none text-gray-800"
-                        placeholder="Fügen Sie hier Ihren lateinischen Text ein, oder kopieren/ziehen Sie ein Bild oder PDF-Dokument direkt in dieses Feld."
-                    ></textarea>
-                    <input type="file" id="file-upload" class="mt-3 block w-full text-sm text-gray-500
-                        file:mr-4 file:py-2 file:px-4
-                        file:rounded-full file:border-0
-                        file:text-sm file:font-semibold
-                        file:bg-indigo-100 file:text-indigo-700
-                        hover:file:bg-indigo-200"
-                        accept="image/*, application/pdf"
-                    />
+            <!-- Linke Spalte: Lateinische Eingabe und Upload -->
+            <div class="card lg:col-span-2">
+                <h2 class="text-2xl font-bold text-gray-800 mb-4 border-b pb-2">Lateinische Quelle (Text oder Bild)</h2>
+                
+                <div id="drag-drop-area" class="border-2 border-dashed border-indigo-300 rounded-lg p-4 mb-4 text-center cursor-pointer hover:border-indigo-400 transition duration-150">
+                    <input type="file" id="file-upload" class="hidden" accept="image/*, application/pdf">
+                    <label for="file-upload" class="cursor-pointer text-indigo-600 font-medium block">
+                        Klicken Sie hier, um eine Datei auszuwählen, oder ziehen Sie sie per Drag & Drop (Bild/PDF).
+                    </label>
+                    <p class="text-sm text-gray-500 mt-1">Sie können Bilder auch einfach in das Textfeld unten einfügen (Strg/Cmd + V).</p>
                 </div>
 
-                <!-- Action Button -->
-                <div class="flex justify-center">
-                    <button id="translate-button" class="translate-button text-xl py-4 px-12 rounded-full shadow-lg hover:shadow-2xl focus:outline-none focus:ring-4 focus:ring-amber-400 flex items-center justify-center">
+                <textarea id="latin-input" class="text-input w-full p-4 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 resize-none text-base" placeholder="Fügen Sie hier Ihren lateinischen Text oder ein Bild aus der Zwischenablage ein. (z.B. 'Veni, vidi, vici')"></textarea>
+
+                <div class="flex flex-col sm:flex-row justify-between items-center mt-4 space-y-3 sm:space-y-0 sm:space-x-4">
+                    <button id="translate-button" class="translate-button w-full sm:w-1/2 flex items-center justify-center px-6 py-3 rounded-full shadow-lg hover:shadow-xl transition duration-200" disabled>
                         <span id="button-text">Übersetzen</span>
-                        <div id="loading-spinner" class="loading-ring hidden ml-3"></div>
+                        <div id="loading-spinner" class="loading-ring ml-3 hidden"></div>
+                    </button>
+                    <button id="clear-button" class="w-full sm:w-1/2 bg-gray-200 text-gray-700 px-6 py-3 rounded-full hover:bg-gray-300 transition duration-200 font-medium">
+                        Eingabe löschen
+                    </button>
+                </div>
+            </div>
+
+            <!-- Rechte Spalte: Deutsche Ausgabe und Community Feed -->
+            <div class="lg:col-span-1 space-y-6">
+                
+                <!-- Deutsche Ausgabe -->
+                <div class="card">
+                    <h2 class="text-2xl font-bold text-gray-800 mb-4 border-b pb-2">Deutsche Übersetzung (Reintext)</h2>
+                    <textarea id="german-output" class="text-output w-full p-4 border border-gray-300 rounded-lg resize-none text-base bg-gray-50" readonly placeholder="Ihre fehlerfreie, unformatierte Übersetzung erscheint hier."></textarea>
+                    <button id="copy-button" class="hidden w-full mt-3 bg-indigo-500 text-white px-4 py-2 rounded-full hover:bg-indigo-600 transition duration-200 flex items-center justify-center text-sm font-medium">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 mr-2" viewBox="0 0 20 20" fill="currentColor">
+                            <path d="M7 9a2 2 0 012-2h6a2 2 0 012 2v6a2 2 0 01-2 2H9a2 2 0 01-2-2V9z" />
+                            <path d="M5 3a2 2 0 00-2 2v6a2 2 0 002 2V5h8a2 2 0 00-2-2H5z" />
+                        </svg>
+                        Übersetzung kopieren
                     </button>
                 </div>
 
-                <!-- Output Panel -->
-                <div id="output-panel" class="card border-t-4 border-indigo-500">
-                    <h2 class="text-xl font-semibold mb-3 text-gray-700 flex items-center justify-between">
-                        <span>🇩🇪 Deutsche Übersetzung (Reiner Text)</span>
-                        <button id="copy-button" class="text-sm bg-gray-200 hover:bg-gray-300 text-gray-700 py-1 px-3 rounded-full hidden">Kopieren</button>
+                <!-- Community Feed -->
+                <div class="card">
+                    <h2 class="text-2xl font-bold text-gray-800 mb-4 border-b pb-2">
+                        Community Feed 
+                        <span class="text-sm font-normal text-indigo-500 float-right mt-1">Die neuesten 10 Übersetzungen</span>
                     </h2>
-                    <textarea id="german-output" class="text-output w-full p-4 border border-gray-300 rounded-lg resize-none text-gray-800 bg-gray-50"
-                        placeholder="Ihre fehlerfreie, unformatierte Übersetzung erscheint hier." readonly
-                    ></textarea>
-                    <div id="error-message" class="text-red-600 mt-2 hidden p-2 bg-red-100 rounded"></div>
+                    <div id="community-feed-content" class="h-72 overflow-y-auto pr-2">
+                        <p class="text-center text-gray-400 py-6">Wird geladen...</p>
+                    </div>
                 </div>
 
             </div>
-            
-            <!-- Rechte Spalte: Community Feed (1/3 Breite auf Desktop) -->
-            <div id="community-feed-container" class="card lg:col-span-1 border-t-4 border-amber-500 min-h-[400px]">
-                <h2 class="text-xl font-semibold mb-4 text-gray-700 flex items-center">
-                    <span class="mr-2 text-amber-500">🌍</span> Community Feed (Echtzeit)
-                </h2>
-                <div id="community-feed-content" class="space-y-3 max-h-[800px] lg:max-h-[900px] overflow-y-auto pr-2">
-                    <p class="text-gray-500 italic text-center py-4">Lade Übersetzungen...</p>
-                </div>
-            </div>
-
-        </div>
-    </main>
-
-    <!-- Modal for Messages/Alerts (Instead of alert()) -->
-    <div id="message-modal" class="fixed inset-0 bg-gray-900 bg-opacity-75 hidden flex items-center justify-center p-4 z-50">
-        <div class="bg-white rounded-lg p-6 shadow-2xl w-full max-w-sm">
-            <h3 id="modal-title" class="text-xl font-bold mb-4 text-indigo-700">Hinweis</h3>
-            <p id="modal-content" class="text-gray-700 mb-6"></p>
-            <button id="modal-close-button" class="w-full bg-indigo-500 hover:bg-indigo-600 text-white font-semibold py-2 rounded-lg">Schließen</button>
         </div>
     </div>
+
+    <!-- Modalfenster für Nachrichten (ersetzt alert/confirm) -->
+    <div id="message-modal" class="hidden fixed inset-0 bg-gray-900 bg-opacity-75 flex items-center justify-center z-50 p-4">
+        <div class="bg-white rounded-xl shadow-2xl p-6 w-full max-w-sm">
+            <h3 id="modal-title" class="text-xl font-bold text-indigo-700 mb-3">Titel</h3>
+            <p id="modal-content" class="text-gray-600 mb-6"></p>
+            <button id="close-modal-button" class="w-full bg-indigo-500 text-white px-4 py-2 rounded-lg hover:bg-indigo-600 transition">
+                OK
+            </button>
+        </div>
+    </div>
+
 </body>
 </html>
